@@ -18,7 +18,12 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Any, Iterable
+from typing import Any
+
+try:
+    import requests
+except ImportError:  # pragma: no cover - only matters if dependency is missing
+    requests = None
 
 
 COMPARE_FIELDS = [
@@ -149,6 +154,54 @@ def compare_si_bl(si_data: dict[str, Any], bl_data: dict[str, Any]) -> list[str]
 def compare_si_vs_bl(si_data: dict[str, Any], bl_data: dict[str, Any]) -> list[str]:
     """Alias for compare_si_bl()."""
     return compare_si_bl(si_data, bl_data)
+
+
+def _is_missing_field_value(value: Any) -> bool:
+    return value is None or value == "" or value == []
+
+
+def build_submission_payload(doc_id: str, si_data: dict[str, Any], bl_data: dict[str, Any]) -> dict[str, Any]:
+    """Build a compliance payload for a document.
+
+    Status is set to NEEDS_REVIEW when the SI/BL data has any field mismatch or
+    missing value. Otherwise it passes.
+    """
+    mismatches = compare_si_bl(si_data, bl_data)
+
+    missing_fields = [
+        field
+        for field in COMPARE_FIELDS
+        if field not in si_data or field not in bl_data
+        or _is_missing_field_value(si_data.get(field))
+        or _is_missing_field_value(bl_data.get(field))
+    ]
+
+    status = "PASSED" if not mismatches and not missing_fields else "NEEDS_REVIEW"
+
+    return {
+        "doc_id": doc_id,
+        "status": status,
+        "mismatches": mismatches,
+        "missing_fields": missing_fields,
+        "checked_fields": COMPARE_FIELDS,
+    }
+
+
+def submit_to_api(payload: dict[str, Any], endpoint_url: str):
+    """POST the compliance JSON to the submit endpoint."""
+    if requests is None:
+        raise RuntimeError("requests is required for submit_to_api(). Install it with: pip install requests")
+
+    submit_url = endpoint_url.rstrip("/")
+    if not submit_url.endswith("/submit"):
+        submit_url = f"{submit_url}/submit"
+
+    response = requests.post(submit_url, json=payload, timeout=30)
+    response.raise_for_status()
+    try:
+        return response.json()
+    except ValueError:
+        return response.text
 
 
 if __name__ == "__main__":
