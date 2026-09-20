@@ -1,0 +1,18 @@
+services:
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: shipcheck-dashboard
+
+    ports:
+      - "8501:8501"
+
+    environment:
+      DATA_SOURCE: /app
+
+    volumes:
+      - ./output:/app/output
+
+    restart: unless-stopped
