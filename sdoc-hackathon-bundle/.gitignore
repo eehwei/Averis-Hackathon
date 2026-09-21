@@ -1,19 +1,14 @@
-# Python cache
+# Python
 __pycache__/
 *.py[cod]
-*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Virtual environments
 .venv/
 venv/
 env/
-
-# Testing and type-checking cache
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
 
 # Environment variables and secrets
 .env
@@ -21,34 +16,20 @@ htmlcov/
 !.env.example
 .streamlit/secrets.toml
 
-# IDE settings
+# IDE and operating system
 .vscode/
 .idea/
-
-# Operating-system files
 .DS_Store
 Thumbs.db
 
-# Log files
-*.log
-
-# Generated dashboard output
+# Generated output
 output/*.json
 output/*.csv
 output/*.pdf
-
-# Keep the output directory in Git
 !output/.gitkeep
 
-# Temporary files
+# Archives and temporary files
+*.zip
+*.log
 tmp/
 temp/
-*.tmp
-
-# Jupyter notebook checkpoints
-.ipynb_checkpoints/
-
-# Build and packaging output
-build/
-dist/
-*.egg-info/

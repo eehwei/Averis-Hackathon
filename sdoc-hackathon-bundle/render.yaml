@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: averis-shipping-verification
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /_stcore/health
+
+    envVars:
+      - key: DATA_SOURCE
+        value: /app
