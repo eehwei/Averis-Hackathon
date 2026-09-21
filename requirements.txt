@@ -13,3 +13,4 @@ python-dotenv>=1.0
 streamlit>=1.50,<2.0
 pandas>=2.2,<3.0
 plotly>=5.24,<7.0
+PyMuPDF>=1.24
