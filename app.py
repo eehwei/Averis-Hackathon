@@ -7,7 +7,9 @@ import json
 import os
 import sys
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+MALAYSIA_TZ = timezone(timedelta(hours=8))
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -1366,7 +1368,11 @@ if page == "Dashboard":
         timestamp_text = "Not generated"
         if generated_at:
             try:
-                timestamp_text = datetime.fromisoformat(generated_at).strftime("%d %b %Y, %H:%M UTC")
+                timestamp_text = (
+                    datetime.fromisoformat(generated_at)
+                    .astimezone(MALAYSIA_TZ)
+                    .strftime("%d %b %Y, %H:%M MYT")
+                )
             except ValueError:
                 timestamp_text = generated_at
         st.caption(
