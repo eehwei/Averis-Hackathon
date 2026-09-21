@@ -9,3 +9,7 @@ services:
     envVars:
       - key: DATA_SOURCE
         value: /app
+      - key: GROQ_API_KEY
+        sync: false
+      - key: SDOC_CLASSIFIER
+        value: llm

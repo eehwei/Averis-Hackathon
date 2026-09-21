@@ -245,6 +245,7 @@ def test_classify_email_does_not_retry_on_client_error(monkeypatch):
     assert sleep_calls == []
 
 
+@pytest.mark.live_api
 @pytest.mark.skipif(
     not os.environ.get("GROQ_API_KEY"),
     reason="requires a real GROQ_API_KEY to call the live API",

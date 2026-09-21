@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
+from checker import normalize_container_count, normalize_gross_weight_kg, normalize_port_name
 from loader import Inbox
 from schema import build_entry
 
@@ -55,18 +56,6 @@ def _clean(value: str) -> str:
     value = value.upper().replace("毛重", "")
     value = re.sub(r"\s+", " ", value)
     return re.sub(r"[^A-Z0-9]+", "", value)
-
-
-def _number(value: str) -> str:
-    match = re.search(r"\d[\d,\.]*", value)
-    if not match:
-        return ""
-    return re.sub(r"[,\.](?=\d{3}(?:\D|$))", "", match.group())
-
-
-def _container_count(value: str) -> str:
-    match = re.search(r"\d[\d,]*", value)
-    return match.group().replace(",", "") if match else ""
 
 
 def _label_for(line: str) -> tuple[str | None, str]:
@@ -255,11 +244,13 @@ def extract_attachment(path: str, content: bytes) -> ExtractionResult:
     return ExtractionResult(None, suffix.lstrip(".") or "unknown", "unreadable")
 
 
-def _normalized(field: str, value: str) -> str:
-    if field in {"container_count"}:
-        return _container_count(value)
+def _normalized(field: str, value: str) -> Any:
+    if field in {"port_of_loading", "port_of_discharge"}:
+        return normalize_port_name(value)
     if field == "gross_weight_kg":
-        return _number(value)
+        return normalize_gross_weight_kg(value)
+    if field == "container_count":
+        return normalize_container_count(value)
     return _clean(value)
 
 
@@ -315,7 +306,7 @@ def classify_with_fallback(
     """Prefer the configured LLM classifier, with deterministic fallback."""
     selected = classifier
     if selected is None:
-        api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+        api_key = os.getenv("GROQ_API_KEY", "").strip()
         llm_enabled = (
             os.getenv("SDOC_CLASSIFIER", "").lower() == "llm"
             and api_key
