@@ -1,5 +1,4 @@
 """Utilities for comparing extracted SI and BL JSON records.
-
 This module normalizes and compares the seven comparison fields used for the
 SI-vs-BL check:
 
