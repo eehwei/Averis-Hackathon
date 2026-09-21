@@ -18,7 +18,10 @@ Build a pipeline that reads this inbox and, for each email, decides:
 The 7 compared fields: **shipper, consignee, notify_party, port_of_loading,
 port_of_discharge, container_count, gross_weight_kg**. Note the SI and BL often
 *label the same field differently* (`Port of Loading` vs `Load Port`) — align by
-meaning, not by header text.
+meaning, not by header text. Weight, container count, and port values are
+normalized before comparison (see `src/checker.py`) so formatting differences
+like "2,000 kg" vs "2000" or "Singapore" vs "SINGAPORE" don't register as
+false mismatches.
 
 ## Setup
 
@@ -26,7 +29,17 @@ meaning, not by header text.
 pip install -r requirements.txt
 ```
 
-Set `GROQ_API_KEY` in a `.env` file at the repo root (see `src/classify.py`).
+Copy `.env.example` to `.env` at the repo root and fill in:
+
+```
+GROQ_API_KEY=your_key_here
+SDOC_CLASSIFIER=llm
+```
+
+**Both variables are required to enable AI classification — the key alone is
+not enough.** If either is missing, `classify_with_fallback()` silently uses
+the deterministic rule-based classifier instead (see "Local pipeline" below).
+`.env` is git-ignored — never commit real keys.
 
 Email classification (`src/classify.py`) calls the [Groq API](https://console.groq.com/) with
 `openai/gpt-oss-120b`. It was switched from Gemini to Groq for the free tier's higher daily
@@ -82,17 +95,38 @@ separate reliability axis.
 The implementation lives under `src/` and tests under `tests/`:
 
 ```bash
-python -m pytest -q
+pytest
 PYTHONPATH=src python -m sdoc_pipeline . -o submission.json
 ```
 
-The default classifier uses deterministic rules. To use the AI classifier
-from `src/classify.py` (now powered by Groq, `openai/gpt-oss-120b`), install
-the requirements and set `GROQ_API_KEY` in a `.env` file at the repo root
-(copy `.env.example` to `.env` and fill in the key — this file is git-ignored).
+`pytest` is safe to run anytime — `tests/conftest.py` automatically forces the
+deterministic classifier during tests (even if `.env` has AI enabled), so the
+test suite never makes real API calls or spends quota. The one deliberate
+exception is a `@pytest.mark.live_api`-marked smoke test, which only runs
+when `GROQ_API_KEY` is set and is skipped otherwise.
 
-If the key is missing, the LLM is disabled automatically. If the LLM is
-unavailable, returns an invalid category, or raises an API error, the
-pipeline falls back to deterministic classification and continues processing.
-Document extraction remains deterministic for TXT, PDF, DOCX, and XLSX files;
-image-only PDFs are routed to `NEEDS_REVIEW` until OCR is added.
+The default classifier uses deterministic rules. To use the AI classifier
+from `src/classify.py` (Groq, `openai/gpt-oss-120b`), set both `GROQ_API_KEY`
+and `SDOC_CLASSIFIER=llm` in `.env` as described in Setup above.
+
+If the LLM is unavailable, returns an invalid category, or raises an API
+error, the pipeline falls back to deterministic classification and continues
+processing. Document extraction remains deterministic for TXT, PDF, DOCX, and
+XLSX files; image-only PDFs are routed to `NEEDS_REVIEW` until OCR is added.
+
+## Dashboard
+
+```bash
+streamlit run app.py
+```
+
+Provides email browsing, manual SI/BL upload and comparison, a human review
+queue with audit trail, and result validation against the required submission
+schema.
+
+## Deployment
+
+Configured for [Render](https://render.com) via `render.yaml` and `Dockerfile`.
+Set `GROQ_API_KEY` as a secret environment variable in the Render dashboard
+after connecting the repo (it is intentionally left out of `render.yaml`
+itself). `SDOC_CLASSIFIER=llm` is set directly in `render.yaml`.
