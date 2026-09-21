@@ -1,3 +1,7 @@
 anthropic>=1.0.0
 pydantic>=2.0.0
 pytest>=8.0.0
+pypdf>=6.0
+python-docx>=1.1
+openpyxl>=3.1
+pytesseract>=0.3
