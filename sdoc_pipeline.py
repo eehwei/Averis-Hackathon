@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import re
+import importlib
+from io import BytesIO
+from zipfile import BadZipFile, ZipFile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree
 
 from loader import Inbox
 
@@ -30,6 +34,13 @@ class ParsedDocument:
     evidence: dict[str, str]
 
 
+@dataclass
+class ExtractionResult:
+    document: ParsedDocument | None
+    format: str
+    error: str | None = None
+
+
 def _clean(value: str) -> str:
     value = value.upper().replace("毛重", "")
     value = re.sub(r"\s+", " ", value)
@@ -50,7 +61,18 @@ def _container_count(value: str) -> str:
 
 def _label_for(line: str) -> tuple[str | None, str]:
     label, _, value = line.partition(":")
-    label = _clean(re.sub(r"\([^)]*\)", "", label))
+    label = re.sub(r"\([^)]*\)", "", label)
+    inline_aliases = (
+        (r"^CONSIGNEE(?:\s|$)", "consignee"),
+        (r"^NOTIFY PARTY(?:\s|$)", "notify_party"),
+        (r"^LOAD PORT(?:\s|$)", "port_of_loading"),
+        (r"^PORT OF DISCHARGE(?:\s|$)", "port_of_discharge"),
+    )
+    for pattern, field in inline_aliases:
+        match = re.match(pattern, label, flags=re.IGNORECASE)
+        if match and not value:
+            return field, label[match.end():].strip()
+    label = _clean(label)
     aliases = {
         "SHIPPER": "shipper",
         "SHIPPEREXPORTER": "shipper",
@@ -75,13 +97,16 @@ def _label_for(line: str) -> tuple[str | None, str]:
         "GROSSWT": "gross_weight_kg",
         "GROSSWTKGS": "gross_weight_kg",
         "GROSSWEIGHT": "gross_weight_kg",
+        "TOTALGROSSWT": "gross_weight_kg",
+        "TOTALGROSSWEIGHT": "gross_weight_kg",
     }
     return aliases.get(label), value.strip()
 
 
 def parse_document(text: str) -> ParsedDocument:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    kind = "BL" if any("BILL OF LADING" in line.upper() for line in lines[:3]) else "SI"
+    header = " ".join(lines[:3]).upper()
+    kind = "SI" if "INSTRUCTION" in header and "DRAFT" not in header else "BL"
     values: dict[str, str] = {}
     evidence: dict[str, str] = {}
     current: str | None = None
@@ -91,12 +116,128 @@ def parse_document(text: str) -> ParsedDocument:
         if field:
             values[field] = value
             evidence[field] = line
-            current = field if field in {"shipper", "consignee", "notify_party"} else None
-        elif current and (line.startswith(";") or line.startswith("#") or "," in line):
+            current = field if not value or field in {"shipper", "consignee", "notify_party"} else None
+        elif current:
             values[current] = f"{values[current]} {line}".strip()
             evidence[current] = f"{evidence[current]} {line}"
+            if current not in {"shipper", "consignee", "notify_party"}:
+                current = None
 
     return ParsedDocument(kind, values, evidence)
+
+
+def _document_from_text(text: str, format: str) -> ExtractionResult:
+    if not text.strip():
+        return ExtractionResult(None, format, "unreadable")
+    return ExtractionResult(parse_document(text), format)
+
+
+def _ooxml_text(content: bytes, filename: str) -> str:
+    namespace = {"main": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    with ZipFile(BytesIO(content)) as archive:
+        root = ElementTree.fromstring(archive.read(filename))
+    return "\n".join(
+        " ".join(node.text or "" for node in paragraph.findall(".//main:t", namespace)).strip()
+        for paragraph in root.findall(".//main:p", namespace)
+    )
+
+
+def _xlsx_text(content: bytes) -> str:
+    main_namespace = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    relationships_namespace = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    with ZipFile(BytesIO(content)) as archive:
+        shared = []
+        if "xl/sharedStrings.xml" in archive.namelist():
+            root = ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))
+            shared = ["".join(node.itertext()).strip() for node in root.findall(f"{{{main_namespace}}}si")]
+        workbook = ElementTree.fromstring(archive.read("xl/workbook.xml"))
+        relationships = ElementTree.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+        targets = {
+            relation.attrib["Id"]: relation.attrib["Target"]
+            for relation in relationships
+        }
+        parts = []
+        for sheet in workbook.findall(f"{{{main_namespace}}}sheets/{{{main_namespace}}}sheet"):
+            relationship_id = sheet.attrib.get(f"{{{relationships_namespace}}}id")
+            target = targets.get(relationship_id, "")
+            sheet_path = target.lstrip("/")
+            if not sheet_path.startswith("xl/"):
+                sheet_path = f"xl/{sheet_path}"
+            root = ElementTree.fromstring(archive.read(sheet_path))
+            for row in root.findall(f".//{{{main_namespace}}}row"):
+                cells = []
+                for cell in row.findall(f"{{{main_namespace}}}c"):
+                    value = cell.find(f"{{{main_namespace}}}v")
+                    if value is None:
+                        inline = cell.find(f"{{{main_namespace}}}is")
+                        cells.append("".join(inline.itertext()).strip() if inline is not None else "")
+                    elif cell.attrib.get("t") == "s":
+                        cells.append(shared[int(value.text)])
+                    else:
+                        cells.append(value.text or "")
+                cells = [cell.strip() for cell in cells if cell.strip()]
+                if len(cells) >= 2:
+                    parts.append(f"{cells[0]}: {' '.join(cells[1:])}")
+                elif cells:
+                    parts.append(cells[0])
+    return "\n".join(parts)
+
+
+def extract_attachment(path: str, content: bytes) -> ExtractionResult:
+    """Convert a supported attachment into the shared semantic document model."""
+    suffix = Path(path).suffix.lower()
+    if suffix == ".txt":
+        return _document_from_text(content.decode("utf-8", errors="replace"), "txt")
+    if suffix == ".pdf":
+        try:
+            try:
+                fitz = importlib.import_module("fitz")
+                text = "\n".join(page.get_text() for page in fitz.open(stream=content, filetype="pdf"))
+            except ImportError:
+                from pypdf import PdfReader
+
+                text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(content)).pages)
+        except Exception:
+            return ExtractionResult(None, "pdf", "unreadable")
+        return _document_from_text(text, "pdf")
+    if suffix == ".docx":
+        try:
+            from docx import Document
+
+            document = Document(BytesIO(content))
+            parts = [paragraph.text for paragraph in document.paragraphs]
+            for table in document.tables:
+                parts.extend(" | ".join(cell.text for cell in row.cells) for row in table.rows)
+            return _document_from_text("\n".join(parts), "docx")
+        except ImportError:
+            try:
+                return _document_from_text(_ooxml_text(content, "word/document.xml"), "docx")
+            except (BadZipFile, KeyError, ElementTree.ParseError):
+                return ExtractionResult(None, "docx", "unreadable")
+        except Exception:
+            return ExtractionResult(None, "docx", "unreadable")
+    if suffix == ".xlsx":
+        try:
+            from openpyxl import load_workbook
+
+            workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
+            parts = []
+            for worksheet in workbook.worksheets:
+                for row in worksheet.iter_rows(values_only=True):
+                    cells = [str(cell).strip() for cell in row if cell is not None and str(cell).strip()]
+                    if len(cells) >= 2:
+                        parts.append(f"{cells[0]}: {' '.join(cells[1:])}")
+                    elif cells:
+                        parts.append(cells[0])
+            return _document_from_text("\n".join(parts), "xlsx")
+        except ImportError:
+            try:
+                return _document_from_text(_xlsx_text(content), "xlsx")
+            except (BadZipFile, KeyError, ValueError, ElementTree.ParseError):
+                return ExtractionResult(None, "xlsx", "unreadable")
+        except Exception:
+            return ExtractionResult(None, "xlsx", "unreadable")
+    return ExtractionResult(None, suffix.lstrip(".") or "unknown", "unreadable")
 
 
 def _normalized(field: str, value: str) -> str:
@@ -166,19 +307,23 @@ def process(inbox: Inbox) -> dict[str, dict[str, Any]]:
             continue
 
         attachments = [str(path) for path in email.get("attachments", [])]
-        si_paths = [path for path in attachments if path.lower().endswith("_si.txt")]
-        bl_paths = [path for path in attachments if path.lower().endswith("_bl.txt")]
+        si_paths = [path for path in attachments if re.search(r"_si\.[^.]+$", path, re.IGNORECASE)]
+        bl_paths = [path for path in attachments if re.search(r"_bl\.[^.]+$", path, re.IGNORECASE)]
         if not si_paths or not bl_paths:
             reason = "missing_attachment" if len(attachments) < 2 else "unreadable"
             submission[email["email_id"]] = _result(category, "NEEDS_REVIEW", reason=reason)
             continue
-        try:
-            si = parse_document(inbox.read_text(si_paths[0]))
-            bl = parse_document(inbox.read_text(bl_paths[0]))
-        except (OSError, UnicodeError):
-            submission[email["email_id"]] = _result(category, "NEEDS_REVIEW", reason="unreadable")
+        si_extraction = extract_attachment(si_paths[0], inbox.read_bytes(si_paths[0]))
+        bl_extraction = extract_attachment(bl_paths[0], inbox.read_bytes(bl_paths[0]))
+        if not si_extraction.document or not bl_extraction.document:
+            error = si_extraction.error or bl_extraction.error or "unreadable"
+            reason = "missing_value" if error == "missing_value" else "unreadable"
+            submission[email["email_id"]] = _result(category, "NEEDS_REVIEW", reason=reason)
             continue
-        submission[email["email_id"]] = compare_documents(si, bl)
+        submission[email["email_id"]] = compare_documents(
+            si_extraction.document,
+            bl_extraction.document,
+        )
     return submission
 
 
