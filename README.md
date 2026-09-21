@@ -1,4 +1,7 @@
-# SDOC Hackathon — participant bundle
+# Averis-Hackathon
+AI-powered email classification and document verification system for shipping operations — classifies inbox requests and compares SI vs BL documents to flag discrepancies. Built for the Averis x Monash hackathon.
+
+## Task
 
 Build a pipeline that reads this inbox and, for each email, decides:
 
@@ -16,6 +19,18 @@ The 7 compared fields: **shipper, consignee, notify_party, port_of_loading,
 port_of_discharge, container_count, gross_weight_kg**. Note the SI and BL often
 *label the same field differently* (`Port of Loading` vs `Load Port`) — align by
 meaning, not by header text.
+
+## Setup
+
+```
+pip install -r requirements.txt
+```
+
+Set `GROQ_API_KEY` in a `.env` file at the repo root (see `src/classify.py`).
+
+Email classification (`src/classify.py`) calls the [Groq API](https://console.groq.com/) with
+`openai/gpt-oss-120b`. It was switched from Gemini to Groq for the free tier's higher daily
+request quota, needed to classify the full ~520-email inbox without hitting rate limits.
 
 ## Quick start
 
@@ -71,21 +86,13 @@ python -m pytest -q
 PYTHONPATH=src python -m sdoc_pipeline . -o submission.json
 ```
 
-The default classifier uses deterministic rules. To use the Claude classifier
-from `src/classify.py`, install the requirements, set `ANTHROPIC_API_KEY`, and
-choose the LLM explicitly:
+The default classifier uses deterministic rules. To use the AI classifier
+from `src/classify.py` (now powered by Groq, `openai/gpt-oss-120b`), install
+the requirements and set `GROQ_API_KEY` in a `.env` file at the repo root
+(copy `.env.example` to `.env` and fill in the key — this file is git-ignored).
 
-Copy `.env.example` to `.env` and fill in the key once. The `.env` file is
-ignored by Git.
-
-```bash
-# PowerShell
-Copy-Item .env.example .env
-python -m sdoc_pipeline . -o submission.json
-```
-
-If the key is still the placeholder, the LLM is disabled automatically. If the
-LLM is unavailable, returns an invalid category, or raises an API error, the
+If the key is missing, the LLM is disabled automatically. If the LLM is
+unavailable, returns an invalid category, or raises an API error, the
 pipeline falls back to deterministic classification and continues processing.
 Document extraction remains deterministic for TXT, PDF, DOCX, and XLSX files;
 image-only PDFs are routed to `NEEDS_REVIEW` until OCR is added.
