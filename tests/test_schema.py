@@ -12,7 +12,7 @@ from schema import (
     build_submission,
 )
 
-BUNDLE = Path(__file__).resolve().parents[1] / "sdoc-hackathon-bundle"
+BUNDLE = Path(__file__).resolve().parents[1]
 
 
 def test_the_vocabularies_match_the_bundle_spec():
