@@ -76,6 +76,34 @@ class SdocPipelineTests(unittest.TestCase):
         results = process(self.inbox)
         self.assertEqual(set(results), {email["email_id"] for email in self.inbox})
 
+    def test_max_seconds_zero_skips_the_classifier_entirely(self):
+        """An already-exhausted time budget should fall back to the
+        deterministic classifier for every email without ever calling the
+        (would-be) LLM classifier, so a slow/unavailable API can't stall the
+        run."""
+        calls = []
+
+        def classifier(email):
+            calls.append(email["email_id"])
+            return "GENERAL"
+
+        results = process(self.inbox, classifier=classifier, max_seconds=0)
+
+        self.assertEqual(calls, [])
+        self.assertEqual(results["email_001"]["category"], "BL_COMPARISON")
+
+    def test_max_seconds_none_keeps_using_the_classifier_throughout(self):
+        calls = []
+
+        def classifier(email):
+            calls.append(email["email_id"])
+            return "GENERAL"
+
+        results = process(self.inbox, classifier=classifier, max_seconds=None)
+
+        self.assertEqual(set(calls), {email["email_id"] for email in self.inbox})
+        self.assertTrue(all(result["category"] == "GENERAL" for result in results.values()))
+
 
 if __name__ == "__main__":
     unittest.main()

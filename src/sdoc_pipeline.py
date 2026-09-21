@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import importlib
 import os
+import time
 from io import BytesIO
 from zipfile import BadZipFile, ZipFile
 from dataclasses import dataclass
@@ -349,10 +350,26 @@ def compare_documents(si: ParsedDocument, bl: ParsedDocument) -> dict[str, Any]:
     return _result("BL_COMPARISON", "MISMATCH" if defects else "OK", defects=defects)
 
 
-def process(inbox: Inbox, classifier: Any = None) -> dict[str, dict[str, Any]]:
+def process(
+    inbox: Inbox, classifier: Any = None, max_seconds: float | None = 25.0
+) -> dict[str, dict[str, Any]]:
+    """Classify and compare every email in the inbox.
+
+    `max_seconds` bounds how long the LLM classifier is used for: once that
+    much time has elapsed, every remaining email is classified with the fast,
+    always-available deterministic rules instead, so the run still finishes
+    even if the API is slow or unavailable. `None` disables the budget. The
+    25s default is sized for a synchronous web request (e.g. a dashboard's
+    "Run Verification" button); pass `None` for a local full run where
+    there's no request timeout and maximum AI coverage is wanted instead.
+    """
     submission: dict[str, dict[str, Any]] = {}
+    start = time.monotonic()
     for email in inbox:
-        category = classify_with_fallback(email, classifier)
+        if max_seconds is not None and time.monotonic() - start >= max_seconds:
+            category = deterministic_classify(email)
+        else:
+            category = classify_with_fallback(email, classifier)
         if category != "BL_COMPARISON":
             submission[email["email_id"]] = _result(category)
             continue
@@ -385,8 +402,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate a shipping document submission.")
     parser.add_argument("source", nargs="?", default=".", help="Dataset folder or Inbox HTTP URL")
     parser.add_argument("-o", "--output", default="submission.json")
+    parser.add_argument(
+        "--max-seconds",
+        type=float,
+        default=None,
+        help=(
+            "stop using the LLM classifier after this many seconds and finish "
+            "with the deterministic classifier (default: no limit)"
+        ),
+    )
     args = parser.parse_args()
-    submission = process(Inbox(args.source))
+    submission = process(Inbox(args.source), max_seconds=args.max_seconds)
     Path(args.output).write_text(json.dumps(submission, indent=2) + "\n", encoding="utf-8")
     print(f"Wrote {len(submission)} email results to {args.output}")
 
