@@ -1,0 +1,12 @@
+[
+  {
+    "email_id": "001",
+    "status": "VERIFIED",
+    "discrepancies": "None"
+  },
+  {
+    "email_id": "002",
+    "status": "NEEDS_REVIEW",
+    "discrepancies": "Weight mismatch"
+  }
+]

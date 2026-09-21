@@ -1,0 +1,3 @@
+email_id,status,discrepancies
+001,VERIFIED,None
+002,NEEDS_REVIEW,Weight mismatch
