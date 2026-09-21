@@ -260,6 +260,18 @@ def deterministic_classify(email: dict[str, Any]) -> str:
     text = f"{subject}\n{body}"
     attachments = [str(path).lower() for path in email.get("attachments", [])]
 
+    # Emails whose main ask is to send/check a draft BL are BL_COMPARISON even
+    # with 0 or 1 attachments - the missing SI/BL gets caught downstream as
+    # NEEDS_REVIEW / missing_attachment, not misrouted to GENERAL here.
+    no_attachment_request_terms = (
+        "send the draft bl",
+        "draft bl for checking",
+        "check the draft bl",
+        "confirm docs",
+    )
+    if any(term in text for term in no_attachment_request_terms):
+        return "BL_COMPARISON"
+
     comparison_terms = (
         "draft bl",
         "bill of lading",
