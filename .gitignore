@@ -1,5 +1,35 @@
-.venv/
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables and secrets
 .env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# IDE and operating system
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Generated output
+output/*.json
+output/*.csv
+output/*.pdf
+!output/.gitkeep
+
+# Archives and temporary files
+*.zip
+*.log
+tmp/
+temp/
