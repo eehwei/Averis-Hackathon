@@ -54,6 +54,24 @@ class SdocPipelineTests(unittest.TestCase):
         result = process(self.inbox)["email_055"]
         self.assertEqual(result["status"], "OK")
 
+    def test_injected_classifier_is_used(self):
+        calls = []
+
+        def classifier(email):
+            calls.append(email["email_id"])
+            return "GENERAL"
+
+        results = process(self.inbox, classifier=classifier)
+        self.assertEqual(set(calls), {email["email_id"] for email in self.inbox})
+        self.assertTrue(all(result["category"] == "GENERAL" for result in results.values()))
+
+    def test_classifier_failure_falls_back_to_rules(self):
+        def classifier(_email):
+            raise RuntimeError("provider unavailable")
+
+        result = process(self.inbox, classifier=classifier)["email_001"]
+        self.assertEqual(result["category"], "BL_COMPARISON")
+
     def test_submission_covers_every_email(self):
         results = process(self.inbox)
         self.assertEqual(set(results), {email["email_id"] for email in self.inbox})

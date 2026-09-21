@@ -61,3 +61,31 @@ You don't have the ground truth. Either:
 Final score = 50% end-to-end (defects caught all the way through) + 30% Stage-1
 macro-F1 + 20% Stage-3 defect-F1. `NEEDS_REVIEW` handling is reported as a
 separate reliability axis.
+
+## Local pipeline
+
+The implementation lives under `src/` and tests under `tests/`:
+
+```bash
+python -m pytest -q
+PYTHONPATH=src python -m sdoc_pipeline . -o submission.json
+```
+
+The default classifier uses deterministic rules. To use the Claude classifier
+from `src/classify.py`, install the requirements, set `ANTHROPIC_API_KEY`, and
+choose the LLM explicitly:
+
+Copy `.env.example` to `.env` and fill in the key once. The `.env` file is
+ignored by Git.
+
+```bash
+# PowerShell
+Copy-Item .env.example .env
+python -m sdoc_pipeline . -o submission.json
+```
+
+If the key is still the placeholder, the LLM is disabled automatically. If the
+LLM is unavailable, returns an invalid category, or raises an API error, the
+pipeline falls back to deterministic classification and continues processing.
+Document extraction remains deterministic for TXT, PDF, DOCX, and XLSX files;
+image-only PDFs are routed to `NEEDS_REVIEW` until OCR is added.

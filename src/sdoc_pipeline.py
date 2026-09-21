@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import importlib
+import os
 from io import BytesIO
 from zipfile import BadZipFile, ZipFile
 from dataclasses import dataclass
@@ -12,6 +13,15 @@ from typing import Any
 from xml.etree import ElementTree
 
 from loader import Inbox
+from schema import build_entry
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+if load_dotenv is not None:
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 
 FIELDS = (
@@ -61,7 +71,7 @@ def _container_count(value: str) -> str:
 
 def _label_for(line: str) -> tuple[str | None, str]:
     label, _, value = line.partition(":")
-    label = re.sub(r"\([^)]*\)", "", label)
+    label = re.sub(r"[\(\（][^\)\）]*[\)\）]", "", label)
     inline_aliases = (
         (r"^CONSIGNEE(?:\s|$)", "consignee"),
         (r"^NOTIFY PARTY(?:\s|$)", "notify_party"),
@@ -207,7 +217,12 @@ def extract_attachment(path: str, content: bytes) -> ExtractionResult:
             document = Document(BytesIO(content))
             parts = [paragraph.text for paragraph in document.paragraphs]
             for table in document.tables:
-                parts.extend(" | ".join(cell.text for cell in row.cells) for row in table.rows)
+                for row in table.rows:
+                    cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                    if len(cells) >= 2:
+                        parts.append(f"{cells[0]}: {cells[1]}")
+                    elif cells:
+                        parts.append(cells[0])
             return _document_from_text("\n".join(parts), "docx")
         except ImportError:
             try:
@@ -248,7 +263,7 @@ def _normalized(field: str, value: str) -> str:
     return _clean(value)
 
 
-def classify(email: dict[str, Any]) -> str:
+def deterministic_classify(email: dict[str, Any]) -> str:
     subject = str(email.get("subject", "")).lower()
     body = str(email.get("body", "")).lower()
     text = f"{subject}\n{body}"
@@ -274,15 +289,48 @@ def classify(email: dict[str, Any]) -> str:
     return "GENERAL"
 
 
+def classify(email: dict[str, Any]) -> str:
+    """Backward-compatible name for the deterministic classifier."""
+    return deterministic_classify(email)
+
+
 def _result(category: str, status: str = "OK", *, reason: str | None = None, defects: list[str] | None = None) -> dict[str, Any]:
-    defects = defects or []
-    return {
-        "category": category,
-        "status": status,
-        "review_reason": reason,
-        "defect_fields": defects,
-        "has_defect": bool(defects),
-    }
+    return build_entry(
+        category,
+        status=status,
+        review_reason=reason,
+        defect_fields=defects,
+    )
+
+
+def _llm_classify(email: dict[str, Any]) -> str:
+    from classify import classify_email
+
+    return classify_email(email)
+
+
+def classify_with_fallback(
+    email: dict[str, Any], classifier: Any = None
+) -> str:
+    """Prefer the configured LLM classifier, with deterministic fallback."""
+    selected = classifier
+    if selected is None:
+        api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+        llm_enabled = (
+            os.getenv("SDOC_CLASSIFIER", "").lower() == "llm"
+            and api_key
+            and not api_key.lower().startswith("replace-with-")
+        )
+        selected = _llm_classify if llm_enabled else None
+    if selected is None:
+        return deterministic_classify(email)
+    try:
+        category = selected(email)
+        if category not in {"BL_COMPARISON", "SI_REQUEST", "INVOICE_QUERY", "GENERAL", "SPAM"}:
+            raise ValueError(f"unknown email category: {category!r}")
+        return category
+    except Exception:
+        return deterministic_classify(email)
 
 
 def compare_documents(si: ParsedDocument, bl: ParsedDocument) -> dict[str, Any]:
@@ -298,10 +346,10 @@ def compare_documents(si: ParsedDocument, bl: ParsedDocument) -> dict[str, Any]:
     return _result("BL_COMPARISON", "MISMATCH" if defects else "OK", defects=defects)
 
 
-def process(inbox: Inbox) -> dict[str, dict[str, Any]]:
+def process(inbox: Inbox, classifier: Any = None) -> dict[str, dict[str, Any]]:
     submission: dict[str, dict[str, Any]] = {}
     for email in inbox:
-        category = classify(email)
+        category = classify_with_fallback(email, classifier)
         if category != "BL_COMPARISON":
             submission[email["email_id"]] = _result(category)
             continue

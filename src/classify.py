@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
-import anthropic
-from pydantic import BaseModel
+try:
+    import anthropic
+except ImportError:
+    anthropic = None
+
+try:
+    from pydantic import BaseModel
+except ImportError:
+    class BaseModel:
+        pass
 
 from schema import Email, EmailCategory
 
@@ -89,9 +97,11 @@ def _format_email(email: Email) -> str:
 
 
 def classify_email(
-    email: Email, *, client: Optional[anthropic.Anthropic] = None
+    email: Email, *, client: Optional[Any] = None
 ) -> EmailCategory:
     """Classify an email into one of the categories in schema.EmailCategory."""
+    if anthropic is None or BaseModel.__module__ == __name__:
+        raise RuntimeError("LLM classification requires anthropic and pydantic")
     client = client or anthropic.Anthropic()
 
     response = client.messages.parse(
