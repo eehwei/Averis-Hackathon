@@ -1,18 +1,36 @@
+import json
 import os
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
+from groq import AuthenticationError, InternalServerError
 
-from classify import SYSTEM_PROMPT, classify_email
+from classify import MODEL, SYSTEM_PROMPT, classify_email
 from schema import CATEGORIES
+
+_FAKE_REQUEST = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+
+
+def _server_error(status_code: int = 503) -> InternalServerError:
+    response = httpx.Response(status_code, request=_FAKE_REQUEST, json={"error": {"message": "temporarily unavailable"}})
+    return InternalServerError("temporarily unavailable", response=response, body=response.json())
+
+
+def _client_error(status_code: int = 401) -> AuthenticationError:
+    response = httpx.Response(status_code, request=_FAKE_REQUEST, json={"error": {"message": "invalid API key"}})
+    return AuthenticationError("invalid API key", response=response, body=response.json())
 
 
 def _mock_client(category: str) -> MagicMock:
-    """Build a fake anthropic client whose messages.parse() returns `category`."""
+    """Build a fake Groq client whose chat.completions.create() returns `category`."""
     client = MagicMock()
     response = MagicMock()
-    response.parsed_output.category = category
-    client.messages.parse.return_value = response
+    response.choices = [MagicMock()]
+    response.choices[0].message.content = json.dumps(
+        {"reasoning": "test reasoning", "category": category}
+    )
+    client.chat.completions.create.return_value = response
     return client
 
 
@@ -115,14 +133,15 @@ def test_classify_email_calls_the_api_with_the_expected_model_and_prompt():
 
     classify_email(BL_COMPARISON_EMAIL, client=client)
 
-    client.messages.parse.assert_called_once()
-    _, kwargs = client.messages.parse.call_args
-    assert kwargs["model"] == "claude-haiku-4-5-20251001"
-    assert kwargs["system"] == SYSTEM_PROMPT
-    prompt = kwargs["messages"][0]["content"]
-    assert BL_COMPARISON_EMAIL["subject"] in prompt
-    assert BL_COMPARISON_EMAIL["from"] in prompt
-    assert "attachments/email_test_001_SI.txt" in prompt
+    client.chat.completions.create.assert_called_once()
+    _, kwargs = client.chat.completions.create.call_args
+    assert kwargs["model"] == MODEL  # always tracks classify.py's MODEL constant
+    messages = kwargs["messages"]
+    assert messages[0] == {"role": "system", "content": SYSTEM_PROMPT}
+    user_content = messages[1]["content"]
+    assert BL_COMPARISON_EMAIL["subject"] in user_content
+    assert BL_COMPARISON_EMAIL["from"] in user_content
+    assert "attachments/email_test_001_SI.txt" in user_content
 
 
 def test_classify_email_lists_every_attachment_in_the_prompt():
@@ -130,10 +149,10 @@ def test_classify_email_lists_every_attachment_in_the_prompt():
 
     classify_email(BL_COMPARISON_EMAIL, client=client)
 
-    _, kwargs = client.messages.parse.call_args
-    prompt = kwargs["messages"][0]["content"]
+    _, kwargs = client.chat.completions.create.call_args
+    user_content = kwargs["messages"][1]["content"]
     for attachment in BL_COMPARISON_EMAIL["attachments"]:
-        assert attachment in prompt
+        assert attachment in user_content
 
 
 def test_classify_email_marks_missing_attachments_as_none():
@@ -141,29 +160,36 @@ def test_classify_email_marks_missing_attachments_as_none():
 
     classify_email(SPAM_EMAIL, client=client)
 
-    _, kwargs = client.messages.parse.call_args
-    prompt = kwargs["messages"][0]["content"]
-    assert "Attachments: (none)" in prompt
+    _, kwargs = client.chat.completions.create.call_args
+    assert "Attachments: (none)" in kwargs["messages"][1]["content"]
 
 
-def test_classify_email_does_not_send_an_effort_setting():
-    """effort is unsupported on Haiku 4.5 - sending it fails the whole request."""
+def test_classify_email_requests_structured_json_output():
+    """openai/gpt-oss-120b needs response_format set to a strict json_schema,
+    or it may return prose instead of the JSON classify_email() expects to
+    parse, or JSON shaped differently than _ClassificationOutput expects."""
     client = _mock_client("GENERAL")
 
     classify_email(GENERAL_EMAIL, client=client)
 
-    _, kwargs = client.messages.parse.call_args
-    assert "output_config" not in kwargs
+    _, kwargs = client.chat.completions.create.call_args
+    response_format = kwargs["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["strict"] is True
+    schema = response_format["json_schema"]["schema"]
+    assert set(schema["required"]) == {"reasoning", "category"}
+    assert set(schema["properties"]["category"]["enum"]) == set(CATEGORIES)
 
 
 def test_classify_email_builds_a_default_client_when_none_is_given(monkeypatch):
     client = _mock_client("GENERAL")
-    monkeypatch.setattr("classify.anthropic.Anthropic", lambda: client)
+    monkeypatch.setenv("GROQ_API_KEY", "fake-key-for-test")
+    monkeypatch.setattr("classify.Groq", lambda api_key: client)
 
     result = classify_email(GENERAL_EMAIL)
 
     assert result == "GENERAL"
-    client.messages.parse.assert_called_once()
+    client.chat.completions.create.assert_called_once()
 
 
 def test_reasoning_is_generated_before_the_category():
@@ -179,12 +205,52 @@ def test_the_system_prompt_states_the_tie_breaking_order():
     assert "TIE-BREAKING" in SYSTEM_PROMPT
 
 
+def test_classify_email_retries_on_server_error_then_succeeds(monkeypatch):
+    monkeypatch.setattr("classify.time.sleep", lambda _seconds: None)
+    client = _mock_client("GENERAL")
+    good_response = client.chat.completions.create.return_value
+    client.chat.completions.create.side_effect = [
+        _server_error(),
+        _server_error(),
+        good_response,
+    ]
+
+    result = classify_email(GENERAL_EMAIL, client=client)
+
+    assert result == "GENERAL"
+    assert client.chat.completions.create.call_count == 3
+
+
+def test_classify_email_gives_up_after_max_attempts_on_server_error(monkeypatch):
+    monkeypatch.setattr("classify.time.sleep", lambda _seconds: None)
+    client = _mock_client("GENERAL")
+    client.chat.completions.create.side_effect = _server_error()
+
+    with pytest.raises(InternalServerError):
+        classify_email(GENERAL_EMAIL, client=client)
+
+    assert client.chat.completions.create.call_count == 3
+
+
+def test_classify_email_does_not_retry_on_client_error(monkeypatch):
+    sleep_calls = []
+    monkeypatch.setattr("classify.time.sleep", lambda seconds: sleep_calls.append(seconds))
+    client = _mock_client("GENERAL")
+    client.chat.completions.create.side_effect = _client_error()
+
+    with pytest.raises(AuthenticationError):
+        classify_email(GENERAL_EMAIL, client=client)
+
+    assert client.chat.completions.create.call_count == 1
+    assert sleep_calls == []
+
+
 @pytest.mark.skipif(
-    not os.environ.get("ANTHROPIC_API_KEY"),
-    reason="requires a real ANTHROPIC_API_KEY to call the live API",
+    not os.environ.get("GROQ_API_KEY"),
+    reason="requires a real GROQ_API_KEY to call the live API",
 )
 def test_classify_email_live_api_classifies_a_real_bl_comparison_email():
-    """Integration smoke test - hits the real Claude API. Costs a small amount
-    and is skipped automatically unless ANTHROPIC_API_KEY is set."""
+    """Integration smoke test - hits the real Groq API. Costs a small amount
+    and is skipped automatically unless GROQ_API_KEY is set."""
     result = classify_email(BL_COMPARISON_EMAIL)
     assert result == "BL_COMPARISON"

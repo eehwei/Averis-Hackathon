@@ -36,7 +36,10 @@ def _classify(email: dict) -> tuple[dict, str, bool]:
     try:
         return email, classify_email(email), True
     except Exception as exc:  # keep going so one bad call can't hide the rest
-        return email, f"ERROR ({type(exc).__name__})", False
+        # Show the real error text, not just the exception type, so failures
+        # are actually diagnosable from the table instead of guessing.
+        message = str(exc)[:120]
+        return email, f"ERROR ({type(exc).__name__}: {message})", False
 
 
 def main() -> int:
@@ -80,17 +83,18 @@ def main() -> int:
     tally: Counter = Counter()
     failures = 0
 
-    print(f"{'#':>3}  {'id':<11} {'att':>3}  {'predicted':<15} subject")
+    print(f"{'#':>3}  {'id':<11} {'att':>3}  predicted / subject")
     print("-" * 100)
     for i, (email, category, ok) in enumerate(results, start=1):
         tally[category] += 1
         failures += not ok
         print(
             f"{i:>3}  {email['email_id']:<11} {len(email['attachments']):>3}  "
-            f"{category:<15} {email['subject'][:58]}"
+            f"{category}"
         )
+        print(f"{'':>3}  {'':<11} {'':>3}  subject: {email['subject'][:80]}")
         body = " ".join(email["body"].split())
-        print(f"{'':>3}  {'':<11} {'':>3}  {'':<15} > {body[:88]}")
+        print(f"{'':>3}  {'':<11} {'':>3}  > {body[:100]}")
 
     print("\nTally:")
     for category, count in tally.most_common():

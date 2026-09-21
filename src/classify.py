@@ -1,15 +1,46 @@
-"""Classifies inbox emails into one of five categories using the Claude API."""
+"""Classifies inbox emails into one of five categories using the Groq API."""
 
 from __future__ import annotations
 
+import json
+import os
+import time
 from typing import Optional
 
-import anthropic
+from dotenv import load_dotenv
+from groq import Groq, InternalServerError
 from pydantic import BaseModel
 
-from schema import Email, EmailCategory
+from schema import CATEGORIES, Email, EmailCategory
 
-MODEL = "claude-haiku-4-5-20251001"
+load_dotenv()
+
+# openai/gpt-oss-120b: the largest general-purpose model this account's Groq
+# free tier has active (checked live via client.models.list() - Groq's
+# lineup and per-account access change over time, so this is not a fixed
+# assumption). It supports strict JSON-schema structured output and its
+# 1,000 requests/day quota covers a ~520-email run with headroom to spare.
+MODEL = "openai/gpt-oss-120b"
+
+MAX_ATTEMPTS = 3
+RETRY_DELAY_SECONDS = 2
+
+_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "email_classification",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "reasoning": {"type": "string"},
+                "category": {"type": "string", "enum": list(CATEGORIES)},
+            },
+            "required": ["reasoning", "category"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 SYSTEM_PROMPT = """You are an email triage assistant for a shipping documentation \
 team at a paper trading company. Classify each incoming email into exactly one \
@@ -166,18 +197,31 @@ def _format_email(email: Email) -> str:
     )
 
 
-def classify_email(
-    email: Email, *, client: Optional[anthropic.Anthropic] = None
-) -> EmailCategory:
+def classify_email(email: Email, *, client: Optional[Groq] = None) -> EmailCategory:
     """Classify an email into one of the categories in schema.EmailCategory."""
-    client = client or anthropic.Anthropic()
+    client = client or Groq(api_key=os.environ["GROQ_API_KEY"])
 
-    response = client.messages.parse(
-        model=MODEL,
-        max_tokens=2048,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": _format_email(email)}],
-        output_format=_ClassificationOutput,
-    )
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": _format_email(email)},
+    ]
 
-    return response.parsed_output.category
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            response = client.chat.completions.create(
+                model=MODEL,
+                messages=messages,
+                response_format=_RESPONSE_FORMAT,
+            )
+            break
+        except InternalServerError:
+            # InternalServerError (5xx, e.g. 503) is transient - retry. A
+            # 4xx error (e.g. AuthenticationError from an invalid API key)
+            # will not succeed on retry, so it is left to propagate
+            # immediately.
+            if attempt == MAX_ATTEMPTS:
+                raise
+            time.sleep(RETRY_DELAY_SECONDS)
+
+    result = _ClassificationOutput(**json.loads(response.choices[0].message.content))
+    return result.category
