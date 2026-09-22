@@ -9,7 +9,7 @@ import time
 from typing import Optional
 
 from dotenv import load_dotenv
-from groq import Groq, InternalServerError
+from groq import Groq, InternalServerError, RateLimitError
 from pydantic import BaseModel
 
 from schema import CATEGORIES, Email, EmailCategory
@@ -216,13 +216,18 @@ def classify_email(email: Email, *, client: Optional[Groq] = None) -> EmailCateg
             )
             break
         except InternalServerError:
-            # InternalServerError (5xx, e.g. 503) is transient - retry. A
-            # 4xx error (e.g. AuthenticationError from an invalid API key)
-            # will not succeed on retry, so it is left to propagate
-            # immediately.
             if attempt == MAX_ATTEMPTS:
                 raise
             time.sleep(RETRY_DELAY_SECONDS)
+        except RateLimitError:
+            # This account's free tier caps at 30 requests/minute - a
+            # sequential run over hundreds of emails will hit this
+            # repeatedly. Wait long enough for the per-minute window to
+            # clear rather than failing straight to the deterministic
+            # fallback.
+            if attempt == MAX_ATTEMPTS:
+                raise
+            time.sleep(3)
 
     result = _ClassificationOutput(**json.loads(response.choices[0].message.content))
     return result.category

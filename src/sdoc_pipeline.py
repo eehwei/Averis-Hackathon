@@ -284,10 +284,10 @@ def deterministic_classify(email: dict[str, Any]) -> str:
     )
     if len(attachments) >= 2 and any(term in text for term in comparison_terms):
         return "BL_COMPARISON"
+    if any(term in text for term in ("prepare the si", "new shipping instruction", "create si", "shipping instruction")):
+        return "SI_REQUEST"
     if "invoice" in text or "billing" in text or "payment" in text:
         return "INVOICE_QUERY"
-    if any(term in text for term in ("prepare the si", "new shipping instruction", "create si")):
-        return "SI_REQUEST"
     if any(term in text for term in ("unsubscribe", "winner", "crypto", "casino", "viagra")):
         return "SPAM"
     return "GENERAL"
@@ -326,6 +326,7 @@ def classify_with_fallback(
             and not api_key.lower().startswith("replace-with-")
         )
         selected = _llm_classify if llm_enabled else None
+        #print(f"DEBUG: llm_enabled={llm_enabled}, api_key_set={bool(api_key)}, selected={selected}")
     if selected is None:
         return deterministic_classify(email)
     try:
@@ -366,6 +367,7 @@ def process(
     submission: dict[str, dict[str, Any]] = {}
     start = time.monotonic()
     for email in inbox:
+        time.sleep(2.1)
         if max_seconds is not None and time.monotonic() - start >= max_seconds:
             category = deterministic_classify(email)
         else:

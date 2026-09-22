@@ -33,3 +33,4 @@ output/*.pdf
 *.log
 tmp/
 temp/
+sdoc-hackathon-docker/
